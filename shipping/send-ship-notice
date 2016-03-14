@@ -1,0 +1,70 @@
+#!/bin/sh
+# Ceci n'est pas une pipe commentaire! \
+exec tclsh8.6 "$0" ${1+"$@"}
+
+package require mysqltcl 3.0
+
+proc pipe {d p} {
+	set fd [open "|$p" RDWR]
+	puts $fd $d
+	close $fd w
+	set rc [read $fd]
+	close $fd
+	return $rc
+}
+
+proc mail {r s b} {
+	set fd [open "|/usr/local/bin/mailx 2>/dev/null -A boltcarrier-auto -s {$s} $r" RDWR]
+	#set fd [open "|/bin/cat" WRONLY]
+	puts $fd $b
+	flush $fd
+	close $fd
+}
+
+set db [::mysql::connect -host localhost -user root -db lemonstand]
+
+set tracking_url(endicia)	"https://tools.usps.com/go/TrackConfirmAction?qtc_tLabels1=%TRACKING_NUMBER%"
+set tracking_url(fedex)		"https://www.fedex.com/apps/fedextrack/?action=track&trackingnumber=%TRACKING_NUMBER%&cntry_code=us"
+set tracking_url(ups)			"http://wwwapps.ups.com/WebTracking/processRequest?HTMLVersion=5.0&AgreeToTermsAndConditions=yes&loc=en_US&tracknum=%TRACKING_NUMBER%"
+
+set order [::mysql::sel $db " \
+	SELECT \
+		id, \
+		order_id, \
+		created, \
+		carrier, \
+		tracking, \
+		email, \
+		notified \
+	FROM \
+		shop_order_tracking \
+	WHERE \
+		notified='0';" ]
+
+::mysql::map $db { id order created carrier tracking email notified } {
+
+	set ship_notification_subject [string toupper "*** Your boltcarrier.com Order #$order has shipped"]
+	set ship_notification_recipient $email
+	set ship_notification_body "
+
+Valued customer --
+
+Thank you for shopping with us.  Your order (O#$order) has been packed and
+labeled and will go out today.
+
+You can track your package by following the link below:
+
+  [regsub -all {%TRACKING_NUMBER%} $tracking_url($carrier) $tracking]
+
+It may take a few hours for tracking information to be available.
+
+Thanks again!
+
+-ayan
+"
+
+	mail $email $ship_notification_subject $ship_notification_body
+	set wdb [::mysql::connect -host localhost -user root -db lemonstand]
+	::mysql::exec $wdb "UPDATE shop_order_tracking SET notified='1' WHERE id='$id';"
+	::mysql::exec $wdb "UPDATE shop_orders SET status_id=(SELECT id FROM shop_order_statuses WHERE name='Fulfilled') WHERE id=${order};"
+}
